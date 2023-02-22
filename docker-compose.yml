@@ -1,0 +1,342 @@
+version: "3.9"
+services:
+
+### DevOps Tools ###
+
+### Service Mesh ###
+
+  kuma:
+    image: docker.io/kumahq/kuma-cp:1.8.1
+    container_name: kuma
+    ports:
+      - "5681:5681"
+    restart: unless-stopped
+    networks:
+      - security-network
+
+### Configuration/Discovery ###
+
+  vault:
+    image: vault:latest
+    restart: always
+    volumes:
+      - type: volume
+        source: VAULT_DATA
+        target: /vault/data
+      - type: volume
+        source: VAULT_LOG
+        target: /etc/vault/logs
+    ports:
+      - "8200:8200/tcp"
+      - "8201:8201"
+    env_file:
+      - ./vault/vault.env
+    cap_add:
+      - IPC_LOCK
+    container_name: vault
+    entrypoint: "vault server -dev"
+    networks:
+      - security-network
+
+  consul-1:
+    image: consul:latest
+    restart: always
+    ports:
+      - "8500:8500"
+    env_file:
+      - ./consul/consul.env
+    container_name: consul-1
+    volumes:
+      - consul-1_data:/consul/data
+    networks:
+      - security-network
+
+  consul-2:
+    image: consul:latest
+    restart: always
+    ports:
+      - "8501:8500"
+    env_file:
+      - ./consul/consul.env
+    container_name: consul-2
+    command: 
+      - 'consul agent -dev -join=172.17.0.2'
+    volumes:
+      - consul-2_data:/consul/data
+    networks:
+      - security-network
+
+  consul-3:
+    image: consul:latest
+    restart: always
+    ports:
+      - "8502:8500"
+    env_file:
+      - ./consul/consul.env
+    container_name: consul-3
+    command: 
+      - 'consul agent -dev -join=172.17.0.2'
+    volumes:
+      - consul-3_data:/consul/data
+    networks:
+      - security-network
+  
+### Database ###
+
+  postgres:
+    image: postgres
+    container_name: postgres
+    volumes:
+      - type: volume
+        source: POSTGRES_DATA
+        target: /var/lib/postgresql/data
+    env_file:
+      - ./postgres/postgres.env 
+    networks:
+      - security-network
+
+  cassandra:
+    image: cassandra:latest
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    networks:
+      - security-network
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    ports:
+      - 27017:27017
+    env_file:
+      - mongodb/mongodb.env
+    environment:
+      - MONGO_INITDB_DATABASE=data_db
+    healthcheck:
+      test:  echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - mongodb_data:/data/db
+#    networks:
+#      - security-network
+
+  mongodb-fail:
+    image: mongo:latest
+    container_name: mongodb-fail
+    ports:
+      - 27018:27017
+    env_file:
+      - mongodb/mongodb.env
+    environment:
+      - MONGO_INITDB_DATABASE=fail_db
+    healthcheck:
+      test:  echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - mongodb_fail:/data/db
+#    networks:
+#      - security-network
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mongo-express
+    ports:
+      - '27020:8081'
+    env_file:
+      - mongo-express/mongo-express.env
+    volumes: 
+      - mongodb_data:/data/db
+    depends_on:
+      mongodb:
+        condition: service_healthy
+#    networks: 
+#      - security-network
+
+  redis:
+    image: redis:6.2-alpine
+    container_name: redis
+    restart: always
+    ports:
+      - '6379:6379'
+    command: 
+      - 'redis-server --save 20 1 --loglevel warning --requirepass eYVX7EwVmmxKPCDmwMtyKVge8oLd2t81'
+    env_file:
+      - redis/redis.env
+    volumes: 
+      - redis_cache:/data
+#    networks:
+#      - security-network
+
+### SSO/IAM ###
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak
+    command: start-dev
+    env_file:
+      - ./keycloak/keycloak.env
+    ports:
+      - 8089:8080
+    depends_on:
+      - postgres
+    networks:
+      - security-network
+  
+### API-Gateway ###
+
+  kong-migration:
+    image: kong:latest
+    container_name: kong-migration
+    command: 
+      - 'kong migrations bootstrap'
+    env_file:
+      - ./kong/kong.env
+    depends_on:
+      - cassandra
+    networks:
+      - security-network
+  
+  kong:
+    image: kong:latest
+    container_name: kong
+    ports:
+      - "8001:8001"
+      - "8002:8002"
+      - "8443:8443"
+      - "8444:8444"
+    env_file:
+      - ./kong/kong.env
+    depends_on:
+      - cassandra
+    networks:
+      - security-network
+
+### Virus Scanner ###
+
+  clamAV:
+    image: mkodockx/docker-clamav
+    container_name: clamAV
+    ports:
+      - "3310:3310/tcp"
+    env_file:
+      - "./clamAV/clamAV.env"
+    networks:
+      - security-network
+
+### Queue ###
+
+  rabbitmq:
+    image: rabbitmq:management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    env_file:
+      - rabbitmq/rabbitmq.env
+    networks:
+      - security-network
+  
+### Observability ###
+
+  prometheus:
+    image: bitnami/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - '9090:9090'
+    env_file:
+      - prometheus/prometheus.env
+    volumes:
+      - ./prometheus/config:/etc/prometheus/
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yaml'
+#    networks:
+#      - security-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    env_file:
+      - grafana/grafana.env
+    volumes:
+      - grafana:/var/lib/grafana
+#    networks:
+#      - security-network
+
+### Logging ###
+
+  
+
+### Microservices ###
+
+  api-gateway:
+    image: api-gateway:latest
+    container_name: api-gateway
+    env_file:
+      - api-gateway/api-gateway.env
+    restart: unless-stopped
+    networks:
+      - security-network
+  
+  event-service:
+    image: event-service:latest
+    container_name: event-service
+    env_file:
+      - event-service/event-service.env
+    restart: unless-stopped
+    networks:
+      - security-network
+  
+  data-service:
+    image: data-service:latest
+    container_name: data-service
+    env_file:
+      - data-service/data-service.env
+    restart: unless-stopped
+    networks:
+      - security-network
+
+  serverless-service:
+    image: serverless-service:latest
+    container_name: serverless-service
+    env_file:
+      - serverless-service/serverless-service.env
+    restart: unless-stopped
+    networks:
+      - security-network
+
+### Volumes ###
+
+volumes:
+  mongodb_data:
+  mongodb_fail:
+  redis_cache:
+  consul-1_data:
+  consul-2_data:
+  consul-3_data:
+  grafana:
+  setup:
+  elasticsearch:
+  VAULT_DATA:
+    name: VAULT_DATA
+  VAULT_LOG:
+    name: VAULT_LOG
+  POSTGRES_DATA:
+    name: POSTGRES_DATA
+    driver: local
+
+### Network ###
+
+networks:
+  security-network:
+    driver: bridge

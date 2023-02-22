@@ -1,0 +1,67 @@
+# my global config
+global:
+  scrape_interval:     120s # By default, scrape targets every 15 seconds.
+  evaluation_interval: 120s # By default, scrape targets every 15 seconds.
+
+# A scrape configuration containing exactly one endpoint to scrape:
+# Here it's Prometheus itself.
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: 'prometheus'
+    # Override the global default and scrape targets from this job every 5 seconds.
+    scrape_interval: 5s
+    # metrics_path defaults to '/metrics'
+    # scheme defaults to 'http'.
+    static_configs:
+         - targets: ['prometheus:9090']
+
+  - job_name: 'Event Service'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 2s
+    static_configs:
+      - targets: ['host.docker.internal:59072']
+        labels:
+          application: 'Event Service'
+  - job_name: 'Data Service'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 2s
+    static_configs:
+      - targets: ['host.docker.internal:59142']
+        labels:
+          application: 'Data Service'
+  - job_name: 'Fail Service'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 2s
+    static_configs:
+      - targets: ['host.docker.internal:55602']
+        labels:
+          application: 'Fail Service'
+  - job_name: 'Backend Service'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 2s
+    static_configs:
+      - targets: ['host.docker.internal:60332']
+        labels:
+          application: 'Backend Service'
+#  - job_name: 'Serverless Service'
+#    metrics_path: '/actuator/prometheus'
+#    scrape_interval: 2s
+#    static_configs:
+#      - targets: ['host.docker.internal:58754']
+#        labels:
+#          application: 'Serverless Service'
+
+#  - job_name: 'consul'
+#    consul_sd_configs:
+#    - server: '172.17.0.3:8500'
+#      services:
+#      - data-service
+#      - event-service
+#    metrics_path: '/actuator/prometheus'
+#    relabel_configs:
+#    - source_labels: [__meta_consul_service_id]
+#      regex: '(.*)-service'
+#      replacement: '$1-service'
+#      target_label: node
+#    - source_labels: [__meta_consul_service_id]
+#      target_label: instance
