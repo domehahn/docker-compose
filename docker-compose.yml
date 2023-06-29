@@ -1,4 +1,5 @@
-version: "3.9"
+# TODO: Group services inside profiles
+
 services:
 
 ### DevOps Tools ###
@@ -11,32 +12,56 @@ services:
     ports:
       - "5681:5681"
     restart: unless-stopped
+    profiles:
+      - kuma
     networks:
-      - security-network
+      - microservice-network
 
 ### Configuration/Discovery ###
 
   vault:
-    image: vault:latest
+    image: hashicorp/vault:latest
     restart: always
+    labels:
+      caddy: "http://vault.test"
+      caddy.reverse_proxy: "{{upstreams 8200}}"
     volumes:
-      - type: volume
-        source: VAULT_DATA
-        target: /vault/data
-      - type: volume
-        source: VAULT_LOG
-        target: /etc/vault/logs
+      - vault_data:/vault/data
+      - vault_log:/etc/vault/logs
+      - ./vault:/vault
     ports:
-      - "8200:8200/tcp"
-      - "8201:8201"
+      - "8201:8200"
     env_file:
       - ./vault/vault.env
     cap_add:
       - IPC_LOCK
     container_name: vault
     entrypoint: "vault server -dev"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8200 || exit 1
+      interval: 10s
+      retries: 12
+      start_period: 10s
+      timeout: 10s
+    profiles:
+      - vault
     networks:
-      - security-network
+      - microservice-network
+  
+  vault-agent:
+    image: hashicorp/vault:latest
+    restart: always
+    ports:
+      - "8200:8200"
+    volumes:
+      - ./vault:/vault
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    container_name: vault-agent
+    entrypoint: "vault agent -log-level debug -config=/vault/vault-agent.hcl"
+    depends_on:
+      vault:
+        condition: service_healthy
 
   consul-1:
     image: consul:latest
@@ -48,8 +73,10 @@ services:
     container_name: consul-1
     volumes:
       - consul-1_data:/consul/data
+    profiles:
+      - consul
     networks:
-      - security-network
+      - microservice-network
 
   consul-2:
     image: consul:latest
@@ -63,8 +90,10 @@ services:
       - 'consul agent -dev -join=172.17.0.2'
     volumes:
       - consul-2_data:/consul/data
+    profiles:
+      - consul
     networks:
-      - security-network
+      - microservice-network
 
   consul-3:
     image: consul:latest
@@ -78,34 +107,52 @@ services:
       - 'consul agent -dev -join=172.17.0.2'
     volumes:
       - consul-3_data:/consul/data
+    profiles:
+      - consul
     networks:
-      - security-network
+      - microservice-network
   
 ### Database ###
 
-  postgres:
-    image: postgres
-    container_name: postgres
-    volumes:
-      - type: volume
-        source: POSTGRES_DATA
-        target: /var/lib/postgresql/data
-    env_file:
-      - ./postgres/postgres.env 
-    networks:
-      - security-network
-
-  cassandra:
-    image: cassandra:latest
-    container_name: cassandra
+  postgres-keycloak:
+    image: postgres:latest
+    container_name: postgres-keycloak
     ports:
-      - "9042:9042"
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - ./postgres/postgres-keycloak.env
+    profiles:
+      - keycloak
     networks:
-      - security-network
+      - microservice-network
 
-  mongodb:
+  postgres-kong:
+    image: postgres:9.5
+    container_name: postgres-kong
+    secrets:
+      - kong_postgres_password
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${KONG_PG_USER:-kong}"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+    restart: on-failure
+    stdin_open: true
+    tty: true
+    env_file:
+      - ./postgres/postgres-kong.env 
+    volumes:
+      - kong_data:/var/lib/postgresql/data
+    profiles:
+      - kong
+    networks:
+      - microservice-network
+
+  mongodb-data:
     image: mongo:latest
-    container_name: mongodb
+    container_name: mongodb-data
     ports:
       - 27017:27017
     env_file:
@@ -120,8 +167,10 @@ services:
       start_period: 10s
     volumes:
       - mongodb_data:/data/db
-#    networks:
-#      - security-network
+    profiles:
+      - mongo
+    networks:
+      - microservice-network
 
   mongodb-fail:
     image: mongo:latest
@@ -140,8 +189,10 @@ services:
       start_period: 10s
     volumes:
       - mongodb_fail:/data/db
-#    networks:
-#      - security-network
+    profiles:
+      - mongo
+    networks:
+      - microservice-network
 
   mongo-express:
     image: mongo-express:latest
@@ -152,11 +203,16 @@ services:
       - mongo-express/mongo-express.env
     volumes: 
       - mongodb_data:/data/db
+#      - mongodb_fail
     depends_on:
-      mongodb:
+      mongodb-data:
         condition: service_healthy
-#    networks: 
-#      - security-network
+      #mongodb-fail:
+      #  condition: service_healthy
+    profiles:
+      - mongo
+    networks: 
+      - microservice-network
 
   redis:
     image: redis:6.2-alpine
@@ -164,14 +220,15 @@ services:
     restart: always
     ports:
       - '6379:6379'
-    command: 
-      - 'redis-server --save 20 1 --loglevel warning --requirepass eYVX7EwVmmxKPCDmwMtyKVge8oLd2t81'
+    command: redis-server --save 20 1 --loglevel warning --requirepass eYVX7EwVmmxKPCDmwMtyKVge8oLd2t81 && sysctl vm.overcommit_memory=1
     env_file:
       - redis/redis.env
     volumes: 
       - redis_cache:/data
-#    networks:
-#      - security-network
+    profiles:
+      - cache
+    networks:
+      - microservice-network
 
 ### SSO/IAM ###
 
@@ -184,38 +241,82 @@ services:
     ports:
       - 8089:8080
     depends_on:
-      - postgres
+      - postgres-keycloak
+    profiles:
+      - keycloak
+    secrets:
+      - keycloak_user
     networks:
-      - security-network
+      - microservice-network
   
 ### API-Gateway ###
 
-  kong-migration:
-    image: kong:latest
-    container_name: kong-migration
-    command: 
-      - 'kong migrations bootstrap'
+  kong-migrations:
+    image: "${KONG_DOCKER_TAG:-kong:latest}"
+    container_name: kong-migrations
+    command: kong migrations bootstrap
+    depends_on:
+      - postgres-kong
     env_file:
       - ./kong/kong.env
-    depends_on:
-      - cassandra
+    secrets:
+      - kong_postgres_password
+    volumes:
+      - kong_prefix_vol:${KONG_PREFIX:-/var/run/kong}
     networks:
-      - security-network
+      - microservice-network
+    profiles:
+      - kong
+    restart: on-failure
+
+  kong-migrations-up:
+    image: "${KONG_DOCKER_TAG:-kong:latest}"
+    container_name: kong-migrations-up
+    command: kong migrations up && kong migrations finish
+    depends_on:
+      - postgres-kong
+    env_file:
+      - ./kong/kong.env
+    secrets:
+      - kong_postgres_password
+    volumes:
+      - kong_prefix_vol:${KONG_PREFIX:-/var/run/kong}
+    networks:
+      - microservice-network
+    profiles:
+      - kong
+    restart: on-failure
   
   kong:
-    image: kong:latest
+    image: "${KONG_DOCKER_TAG:-kong:latest}"
     container_name: kong
+    user: "${KONG_USER:-kong}"
+    secrets:
+      - kong_postgres_password
     ports:
-      - "8001:8001"
-      - "8002:8002"
-      - "8443:8443"
-      - "8444:8444"
+      - "${KONG_INBOUND_PROXY_LISTEN:-0.0.0.0}:8000:8000/tcp"
+      - "${KONG_INBOUND_SSL_PROXY_LISTEN:-0.0.0.0}:8443:8443/tcp"
+      - "127.0.0.1:8001:8001/tcp"
+      - "127.0.0.1:8444:8444/tcp"
     env_file:
       - ./kong/kong.env
-    depends_on:
-      - cassandra
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    restart: on-failure:5
+    read_only: true
+    volumes:
+      - kong_prefix_vol:${KONG_PREFIX:-/var/run/kong}
+      - kong_tmp_vol:/tmp
+      - ./kong/config:/opt/kong
+    security_opt:
+      - no-new-privileges
+    profiles:
+      - kong
     networks:
-      - security-network
+      - microservice-network
 
 ### Virus Scanner ###
 
@@ -226,8 +327,10 @@ services:
       - "3310:3310/tcp"
     env_file:
       - "./clamAV/clamAV.env"
+    profiles:
+      - scan
     networks:
-      - security-network
+      - microservice-network
 
 ### Queue ###
 
@@ -239,8 +342,10 @@ services:
       - "15672:15672"
     env_file:
       - rabbitmq/rabbitmq.env
+    profiles:
+      - rabbit
     networks:
-      - security-network
+      - microservice-network
   
 ### Observability ###
 
@@ -256,8 +361,10 @@ services:
       - ./prometheus/config:/etc/prometheus/
     command:
       - '--config.file=/etc/prometheus/prometheus.yaml'
-#    networks:
-#      - security-network
+    profiles:
+      - observability
+    networks:
+      - microservice-network
 
   grafana:
     image: grafana/grafana:latest
@@ -270,12 +377,358 @@ services:
       - grafana/grafana.env
     volumes:
       - grafana:/var/lib/grafana
-#    networks:
-#      - security-network
+    profiles:
+      - observability
+    networks:
+      - microservice-network
 
-### Logging ###
+### Logging, Monitoring and Tracing###
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.13
+    container_name: jaeger
+    #environment:
+    #  COLLECTOR_ZIPKIN_HTTP_PORT: 9411
+    ports:
+      #- "5775:5775/udp"
+      - "6831:6831/udp"
+      #- "6832:6832/udp"
+      #- "5778:5778"
+      - "16686:16686"
+      #- "14268:14268"
+      #- "9411:9411"
+      - "14250:14250"
+    profiles:
+      - monitoring
+    networks:
+      - microservice-network
   
+  otel-collector:
+    image: otel/opentelemetry-collector
+    container_name: otel-collector
+    command: [--config=/etc/otel-collector-config.yaml]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - 1888:1888 # pprof extension
+      - 8888:8888 # Prometheus metrics exposed by the collector
+      - 8889:8889 # Prometheus exporter metrics
+      - 13133:13133 # health_check extension
+      - 4317:4317 # OTLP gRPC receiver
+      - 4318:4318 # OTLP http receiver
+      - 55679:55679 # zpages extension
+    profiles:
+      - monitoring
+    networks:
+      - microservice-network
+  
+  setup:
+    build:
+      context: setup/
+      args:
+        ELASTIC_VERSION: ${ELASTIC_VERSION}
+    init: true
+    volumes:
+      - ./setup/entrypoint.sh:/entrypoint.sh:ro,Z
+      - ./setup/helpers.sh:/helpers.sh:ro,Z
+      - ./setup/roles:/roles:ro,Z
+      - setup:/state:Z
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:-}
+      KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
+      METRICBEAT_INTERNAL_PASSWORD: ${METRICBEAT_INTERNAL_PASSWORD:-}
+      FILEBEAT_INTERNAL_PASSWORD: ${FILEBEAT_INTERNAL_PASSWORD:-}
+      HEARTBEAT_INTERNAL_PASSWORD: ${HEARTBEAT_INTERNAL_PASSWORD:-}
+      MONITORING_INTERNAL_PASSWORD: ${MONITORING_INTERNAL_PASSWORD:-}
+      BEATS_SYSTEM_PASSWORD: ${BEATS_SYSTEM_PASSWORD:-}
+    profiles:
+      - monitoring
+    networks:
+      - microservice-network
+    depends_on:
+      - elasticsearch
+
+  elasticsearch:
+    build:
+      context: elasticsearch/
+      args:
+        ELASTIC_VERSION: ${ELASTIC_VERSION}
+    container_name: elasticsearch
+    volumes:
+      - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro,Z
+      - elasticsearch:/usr/share/elasticsearch/data:Z
+    ports:
+      - 9200:9200
+      - 9300:9300
+    environment:
+      node.name: elasticsearch
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      # Bootstrap password.
+      # Used to initialize the keystore during the initial startup of
+      # Elasticsearch. Ignored on subsequent runs.
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      # Use single node discovery in order to disable production mode and avoid bootstrap checks.
+      # see: https://www.elastic.co/guide/en/elasticsearch/reference/current/bootstrap-checks.html
+      discovery.type: single-node
+    profiles:
+      - monitoring
+    networks:
+      - microservice-network
+    restart: unless-stopped
+
+  logstash:
+    build:
+      context: logstash/
+      args:
+        ELASTIC_VERSION: ${ELASTIC_VERSION}
+    container_name: logstash
+    volumes:
+      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro,Z
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro,Z
+      - logstash:/tmp
+    ports:
+      - 5044:5044
+      - 50000:50000/tcp
+      - 50000:50000/udp
+      - 9600:9600
+    environment:
+      LS_JAVA_OPTS: -Xms256m -Xmx256m
+      LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:-}
+    profiles:
+      - monitoring
+    networks:
+      - microservice-network
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  kibana:
+    build:
+      context: kibana/
+      args:
+        ELASTIC_VERSION: ${ELASTIC_VERSION}
+    container_name: kibana
+    volumes:
+      - ./kibana/config/kibana.yml:/usr/share/kibana/config/kibana.yml:ro,Z
+    ports:
+      - 5601:5601
+    environment:
+      KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
+    profiles:
+      - monitoring
+    networks:
+      - microservice-network
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  filebeat:
+    build: 
+      context: filebeat/
+      args:
+        ELASTIC_VERSION: ${ELASTIC_VERSION}
+    container_name: filebeat
+    volumes:
+      - filebeat:/logs
+    ports:
+      - 5066:5066
+      - 50066:50066/tcp
+      - 50066:50066/udp
+    environment:
+      FB_JAVA_OPTS: -Xms256m -Xmx256m
+      FILEBEAT_INTERNAL_PASSWORD: ${FILEBEAT_INTERNAL_PASSWORD:-}
+    profiles:
+      - monitoring
+    networks:
+      - microservice-network
+    depends_on:
+      - logstash
+    restart: unless-stopped
+
+### Load Testing ###
+
+  locust-master:
+    image: locustio/locust:latest
+    container_name: locust-master
+    ports:
+      - 8089:8089
+    command: -f /mnt/locust/locustfile.py --master -H http://locust-master:8089
+    volumes:
+      - ./locust:/mnt/locust
+    profiles:
+      - load-testing
+    networks:
+      - microservice-network
+  
+  locust-worker:
+    image: locustio/locust:latest
+    container_name: locust-worker
+    volumes:
+      - ./locust:/mnt/locust
+    command: -f /mnt/locust/locustfile.py --worker --master-host locust-master
+    depends_on:
+      - locust-master
+    profiles:
+      - load-testing
+    networks:
+      - microservice-network
+
+### IaC ###
+
+  #docker compose run --rm terraform-consul init
+  #docker compose run --rm terraform-consul plan
+  #docker compose run --rm terraform-consul apply
+  terraform-consul:
+    image: hashicorp/terraform:0.14.10
+    volumes:
+      - ./terraform/consul:/infra
+    env_file:
+      - ./terraform/terraform.env
+    working_dir: /infra
+    restart: unless-stopped
+    profiles:
+      - terraform
+    networks:
+      - microservice-network
+  
+  #docker compose run --rm terraform-vault init
+  #docker compose run --rm terraform-vault plan
+  #docker compose run --rm terraform-vault apply
+  terraform-vault:
+    image: hashicorp/terraform:0.14.10
+    volumes:
+      - ./terraform/vault:/infra
+    env_file:
+      - ./terraform/terraform.env
+    working_dir: /infra
+    restart: unless-stopped
+    profiles:
+      - terraform
+    networks:
+      - microservice-network
+  
+  #docker compose run --rm terraform-grafana init
+  #docker compose run --rm terraform-grafana plan
+  #docker compose run --rm terraform-grafana apply
+  terraform-grafana:
+    image: hashicorp/terraform:0.14.10
+    volumes:
+      - ./terraform/grafana:/infra
+    env_file:
+      - ./terraform/terraform.env
+    working_dir: /infra
+    restart: unless-stopped
+    profiles:
+      - terraform
+    networks:
+      - microservice-network
+
+### Repositories ###
+
+  verdaccio:
+    image: verdaccio/verdaccio:nightly-master
+    container_name: verdaccio
+    ports:
+      - '4873:4873'
+    labels:
+      caddy: "http://verdaccio.test"
+      caddy.reverse_proxy: "{{upstreams 4873}}"
+    volumes:
+      - './storage:/verdaccio/storage'
+      - './conf:/verdaccio/conf'
+    restart: unless-stopped
+    networks:
+      - microservice-network
+  
+  nexus:
+    image: klo2k/nexus3
+    container_name: nexus
+    ports:
+      - '8081:8081'
+    labels:
+      caddy: "http://nexus.test"
+      caddy.reverse_proxy: "{{upstreams 8081}}"
+    volumes:
+      - nexus_data:/nexus-data
+    restart: unless-stopped
+    networks:
+      - microservice-network
+
+### Proxies ###
+
+  caddy:
+    image: lucaslorentz/caddy-docker-proxy:ci-alpine
+    container_name: caddy-proxy
+    ports:
+      - 8080:80
+      - 1443:443
+    environment:
+      - CADDY_INGRESS_NETWORKS=docker-compose-01_microservice-network
+    #labels:
+      #caddy: "none"
+      #caddy_0.https_port: "443"
+      #caddy_0.auto_https: "disable_certs" # Disable automatic cert generation as we're using self signed certs
+      #caddy_0.ocsp_stapling: "off" # Disable ocsp as it is not working with self signed certs
+      #caddy.tls: "/etc/caddy/teststage.pem /etc/caddy/teststage.key.pem" # Format: [Certificate_in_pem_format Certificate_key_in_pem_format]
+      #caddy.tls.ca_root: "/etc/caddy/oev_ca.pem" # Defines the root cert
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      #- ./tls:/etc/caddy
+      - caddy_data:/data
+    restart: unless-stopped
+    networks:
+      - microservice-network
+
+### CI/CD ###
+
+  gitlab:
+    image: 'gitlab/gitlab-ce:latest'
+    restart: always
+    hostname: 'localhost'
+    container_name: gitlab-ce
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost'
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - '/tmp/gitlab2/config:/etc/gitlab'
+      - '/tmp/gitlab2/logs:/var/log/gitlab'
+      - '/tmp/gitlab2/data:/var/opt/gitlab'
+      #- ./gitlab/config/nginx:/etc/gitlab/nginx 
+    networks:
+      - microservice-network
+
+  gitlab-runner:
+    image: gitlab/gitlab-runner:alpine
+    container_name: gitlab-runner
+    restart: always
+    depends_on:
+      - gitlab
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock'
+      - '/tmp/gitlab2/runner:/etc/gitlab-runner'
+    networks:
+      - microservice-network
+
+### AWS ###
+
+  localstack:
+    container_name: "${LOCALSTACK_DOCKER_NAME-localstack_main}"
+    image: localstack/localstack:latest-arm64
+    ports:
+      - "127.0.0.1:4566:4566"            # LocalStack Gateway
+      #- "127.0.0.1:4510-4559:4510-4559"  # external services port range
+    environment:
+      - DEBUG=${DEBUG-}
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-localstack_data}:/var/lib/localstack"
+      - "/Users/dominikhahn/.colima/docker.sock:/var/run/docker.sock"
+    networks:
+      - microservice-network
 
 ### Microservices ###
 
@@ -284,9 +737,15 @@ services:
     container_name: api-gateway
     env_file:
       - api-gateway/api-gateway.env
+    ports:
+      - 8080:8080
     restart: unless-stopped
+    volumes:
+      - filebeat:/tmp
+    profiles:
+      - microservice
     networks:
-      - security-network
+      - microservice-network
   
   event-service:
     image: event-service:latest
@@ -294,8 +753,14 @@ services:
     env_file:
       - event-service/event-service.env
     restart: unless-stopped
+    profiles:
+      - microservice
+    volumes:
+      - filebeat:/tmp
+    depends_on:
+      - redis
     networks:
-      - security-network
+      - microservice-network
   
   data-service:
     image: data-service:latest
@@ -303,17 +768,81 @@ services:
     env_file:
       - data-service/data-service.env
     restart: unless-stopped
+    volumes:
+      - filebeat:/tmp
+    depends_on:
+      mongodb-data:
+        condition: service_healthy
+    profiles:
+      - mongo
     networks:
-      - security-network
+      - microservice-network
 
   serverless-service:
-    image: serverless-service:latest
+    build: 
+      context: microservices/
+      args:
+        JDK_VERSION: 17-focal
     container_name: serverless-service
     env_file:
       - serverless-service/serverless-service.env
     restart: unless-stopped
+    profiles:
+      - microservice
     networks:
-      - security-network
+      - microservice-network
+  
+  fail-service:
+    image: fail-service:latest
+    container_name: fail-service
+    env_file:
+      - fail-service/fail-service.env
+    restart: unless-stopped
+    depends_on:
+      mongodb-fail:
+        condition: service_healthy
+    profiles:
+      - microservice
+    networks:
+      - microservice-network
+  
+  backend-service:
+    image: backend-service:latest
+    container_name: backend-service
+    env_file:
+      - backend-service/backend-service.env
+    restart: unless-stopped
+    profiles:
+      - microservice
+    networks:
+      - microservice-network
+  
+  kongapigateway:
+    image: kongapigateway:latest
+    container_name: kongapigateway
+    ports:
+      - "8080"
+    restart: unless-stopped
+    profiles:
+      - microservice
+    networks:
+      - microservice-network
+
+  config-server:
+    image: config-server:latest
+    container_name: config-server
+    env_file:
+      - config-server/config-server.env
+    restart: unless-stopped
+    ports:
+      - "1234:1234"
+    volumes:
+      - filebeat:/tmp
+      - ./config-server/config-files:/config-files
+    profiles:
+      - microservice
+    networks:
+      - microservice-network
 
 ### Volumes ###
 
@@ -327,16 +856,40 @@ volumes:
   grafana:
   setup:
   elasticsearch:
-  VAULT_DATA:
-    name: VAULT_DATA
-  VAULT_LOG:
-    name: VAULT_LOG
-  POSTGRES_DATA:
-    name: POSTGRES_DATA
-    driver: local
+  logstash:
+  filebeat:
+  vault_data:
+  vault_log:
+  postgres_data:
+  kong_data: {}
+  kong_prefix_vol:
+    driver_opts:
+     type: tmpfs
+     device: tmpfs
+  kong_tmp_vol:
+    driver_opts:
+     type: tmpfs
+     device: tmpfs
+  nexus_data:
+  caddy_data:
+  localstack_data:
+  gitlab-runner-config:
 
 ### Network ###
 
 networks:
-  security-network:
+  microservice-network:
     driver: bridge
+    external: false
+
+### Secrets ###
+secrets:
+  kong_postgres_password:
+    file: ./postgres/POSTGRES_PASSWORD
+  keycloak_user:
+    file: ./keycloak/KEYCLOAK_USER
+
+x-secrets2env: &secrets2env
+  source: secrets2env.sh
+  target: /run/secrets/secrets2env.sh
+  mode: 0777

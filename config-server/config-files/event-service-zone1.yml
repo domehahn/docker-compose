@@ -1,0 +1,21 @@
+spring:
+  rabbitmq:
+    host: host.docker.internal
+    port: 5672
+    username: ${rabbitmq.username}
+    password: ${rabbitmq.password}
+rabbit:
+  event:
+    queue: "q.event-queue"
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+    jmx:
+      exposure:
+        include: "*"  
+  tracing:
+    enabled: true
+    sampling:
+      probability: 1.0

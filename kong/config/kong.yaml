@@ -1,0 +1,35 @@
+# a very minimal declarative config file
+_format_version: "2.1"
+_transform: true
+#_format_version: "1.1"
+#services:
+#  - name: kongapigateway
+#    protocol: http
+#    host: kongapigateway
+#    port: 8080
+#    path: /
+#    plugins: []
+#    routes:
+#      - tags:
+#          - OAS3_import
+#        name: kongapigateway-getTest
+#        methods:
+#          - GET
+#        paths:
+#          - /kong/test$
+#        strip_path: false
+#    tags:
+#      - OAS3_import
+#upstreams:
+#  - name: kongapigateway
+#    targets:
+#      - target: kongapigateway:8080
+#    tags:
+#      - OAS3_import
+#plugins:
+#  - name: rate-limiting
+#    service: kongapigateway
+#    config:
+#      second: 5
+#      hour: 10
+#      policy: local

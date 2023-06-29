@@ -1,0 +1,9 @@
+filebeat.inputs:
+- type: filestream
+  id: log-filestream-id
+  enabled: true
+  paths:
+    - /logs/*.log
+ 
+output.logstash:
+  hosts: ["logstash:5044"]
